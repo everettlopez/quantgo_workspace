@@ -496,3 +496,24 @@ if st.button("Backup this run to Cloudflare R2"):
                 st.error(f"R2 backup failed: {e}")
                 # after you finish saving artifacts to `out_dir`:
 st.session_state['last_out_dir'] = str(out_dir)  # <-- remember the folder for backup
+st.write("### Cloudflare R2 Backup")
+if st.button("Backup last run to R2"):
+    p = st.session_state.get('last_out_dir')
+    if not p:
+        st.warning("No completed run found this session. Run the experiment first.")
+    else:
+        out_dir = Path(p)
+        bucket = st.secrets.get("S3_BUCKET")
+        prefix = st.secrets.get("S3_PREFIX", "gsw/runs")
+        if not (bucket and st.secrets.get("S3_ENDPOINT_URL") and
+                st.secrets.get("AWS_ACCESS_KEY_ID") and st.secrets.get("AWS_SECRET_ACCESS_KEY")):
+            st.error("Missing R2 secrets (S3_ENDPOINT_URL, S3_BUCKET, AWS keys).")
+        else:
+            with st.spinner(f"Uploading {out_dir.name} to R2…"):
+                try:
+                    uploaded, skipped = r2_upload_dir(out_dir, bucket, prefix)
+                    st.success(f"Uploaded {uploaded} files to r2://{bucket}/{prefix}/{out_dir.name}/")
+                    if skipped:
+                        st.warning("Some files skipped:\n" + "\n".join([f"- {n}: {err}" for n, err in skipped[:10]]))
+                except Exception as e:
+                    st.error(f"R2 backup failed: {e}")
