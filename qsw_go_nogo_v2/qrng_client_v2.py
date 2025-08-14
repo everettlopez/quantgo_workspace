@@ -95,41 +95,85 @@ class QRNGClient:
             return 0.5
 
     # --- internal: strict quantum refill ---
-    def _refill_quantum_strict(self):
+        def _refill_quantum_strict(self):
         """
-        Try providers in priority order. With quantum_only=True:
-        - Retry failed fetches with exponential backoff up to max_retries
-        - If still failing, raise RuntimeError (NO fallback)
-        With quantum_only=False:
-        - If all providers fail, fall back to PRNG to keep the app running.
+        Pure mode policy:
+          - Try providers in priority order with per-attempt backoff.
+          - If none succeed in a cycle, keep cycling providers.
+          - If QSW_PURE_MAX_WAIT == 0 → wait indefinitely.
+            Else wait up to that many seconds total, then raise.
+        Non-pure:
+          - Fall back to PRNG if all providers fail once.
         """
-        errors = []
-        for prov in self.providers:
-            ok = False
-            delay = 0.3
-            for attempt in range(1, self.max_retries + 1):
-                try:
-                    if prov == "anu":
-                        ok = self._refill_from_anu()
-                    elif prov == "json":
-                        ok = self._refill_from_json()
-                    else:
-                        errors.append(f"Unknown provider '{prov}'")
-                        ok = False
-                    if ok:
-                        break
-                except Exception as e:
-                    errors.append(f"{prov} attempt {attempt}: {e}")
-                time.sleep(delay)
-                delay *= self.backoff
-            if ok:
-                return  # buffer filled
-        # All providers failed
-        if self._quantum_only:
-            # STRICT: no fallback, stop here.
-            raise RuntimeError("Pure QRNG is enabled: all quantum providers failed; not falling back.")
-        # Non-strict: fallback to PRNG
-        self._fallback_fill_prng()
+        # Fast path: if not in strict mode, do the old retry loops once then fallback.
+        if not self._quantum_only:
+            errors = []
+            for prov in self.providers:
+                ok = False
+                delay = 0.3
+                for attempt in range(1, self.max_retries + 1):
+                    try:
+                        if prov == "anu":
+                            ok = self._refill_from_anu()
+                        elif prov == "json":
+                            ok = self._refill_from_json()
+                        else:
+                            errors.append(f"Unknown provider '{prov}'")
+                            ok = False
+                        if ok:
+                            return
+                    except Exception as e:
+                        errors.append(f"{prov} attempt {attempt}: {e}")
+                    time.sleep(delay)
+                    delay *= self.backoff
+                # next provider
+            # All providers failed once → fallback to PRNG
+            self._fallback_fill_prng()
+            return
+
+        # Strict quantum-only mode
+        # Read max wait (seconds). Default 0 = wait forever.
+        try:
+            max_wait_total = float(os.getenv("QSW_PURE_MAX_WAIT", "0"))
+        except Exception:
+            max_wait_total = 0.0  # infinite
+
+        start_time = time.time()
+        cycle_delay_base = 0.3   # initial delay per attempt
+        delay_cap = 8.0          # cap exponential backoff sleep
+        cycle = 0
+
+        while True:
+            cycle += 1
+            # Try each provider in order for one "cycle"
+            for prov in self.providers:
+                delay = cycle_delay_base
+                for attempt in range(1, self.max_retries + 1):
+                    try:
+                        if prov == "anu":
+                            if self._refill_from_anu():
+                                return
+                        elif prov == "json":
+                            if self._refill_from_json():
+                                return
+                        else:
+                            # Unknown provider — skip quickly
+                            break
+                    except Exception:
+                        pass
+                    # sleep with capped backoff
+                    time.sleep(min(delay, delay_cap))
+                    delay = min(delay * self.backoff, delay_cap)
+
+            # After trying all providers this cycle, check the total wait budget
+            if max_wait_total > 0:
+                waited = time.time() - start_time
+                if waited >= max_wait_total:
+                    raise RuntimeError(
+                        "Pure QRNG is enabled: providers unavailable for "
+                        f"{int(waited)}s; giving up without fallback."
+                    )
+            # Otherwise (infinite mode) just loop again
 
     def _fallback_fill_prng(self):
         self._buf = [random.random() for _ in range(self.batch_size)]
