@@ -1,115 +1,85 @@
-name: qsw-collector
+name: QSW Collector
 
 on:
-  schedule:
-    - cron: "0 * * * *"        # every hour (was every 30 min)
-  workflow_dispatch: {}
-
-concurrency:
-  group: qsw-collector
-  cancel-in-progress: false
+  workflow_dispatch:
 
 jobs:
-  run:
+  collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 300       # was 120 → allow up to 5 hours
-
     steps:
-      - uses: actions/checkout@v4
+      - name: Set up job
+        run: echo "Starting QSW Collector..."
 
-      - uses: actions/setup-python@v5
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt || true
-          pip install boto3 pandas matplotlib scikit-learn
+          pip install -r requirements.txt
+          pip install boto3
 
       - name: Validate R2 secrets
         run: |
           test -n "${{ secrets.S3_ENDPOINT_URL }}" || (echo "Missing S3_ENDPOINT_URL" && exit 1)
-          test -n "${{ secrets.S3_BUCKET }}"       || (echo "Missing S3_BUCKET" && exit 1)
-          test -n "${{ secrets.S3_PREFIX }}"       || (echo "Missing S3_PREFIX" && exit 1)
+          test -n "${{ secrets.S3_BUCKET }}" || (echo "Missing S3_BUCKET" && exit 1)
           test -n "${{ secrets.AWS_ACCESS_KEY_ID }}" || (echo "Missing AWS_ACCESS_KEY_ID" && exit 1)
           test -n "${{ secrets.AWS_SECRET_ACCESS_KEY }}" || (echo "Missing AWS_SECRET_ACCESS_KEY" && exit 1)
+        shell: bash
 
       - name: R2 preflight — write test object
-  run: |
-    python - <<'PY'
-    import os, json, time
-    import boto3
-    from botocore.client import Config
+        run: |
+          python - <<'PY'
+          import os, time
+          import boto3
+          from botocore.client import Config
 
-    ep   = os.environ["S3_ENDPOINT_URL"].strip().rstrip("/")
-    buck = os.environ["S3_BUCKET"]
-    pfx  = os.environ.get("S3_PREFIX","autocollect").strip().rstrip("/")
-    key  = f"{pfx}/_status/preflight_{int(time.time())}.txt"
+          ep   = os.environ["S3_ENDPOINT_URL"].strip().rstrip("/")
+          buck = os.environ["S3_BUCKET"]
+          pfx  = os.environ.get("S3_PREFIX","autocollect").strip().rstrip("/")
+          key  = f"{pfx}/_status/preflight_{int(time.time())}.txt"
 
-    s3 = boto3.client(
-        "s3",
-        endpoint_url=ep if ep.startswith("http") else "https://" + ep,
-        aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
-        aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
-        region_name=os.environ.get("S3_REGION","auto"),
-        config=Config(signature_version="s3v4", s3={"addressing_style":"virtual"}),
-    )
-    body = f"hello from actions at {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n"
-    s3.put_object(Bucket=buck, Key=key, Body=body.encode(), ContentType="text/plain")
-    print("Wrote:", f"s3://{buck}/{key}")
-    PY
-  env:
-    S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
-    S3_BUCKET:       ${{ secrets.S3_BUCKET }}
-    S3_PREFIX:       ${{ secrets.S3_PREFIX }}   # or remove this line if you hardcoded it in env above
-    S3_REGION:       "auto"
-    AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
-    AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          s3 = boto3.client(
+              "s3",
+              endpoint_url=ep if ep.startswith("http") else "https://" + ep,
+              aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+              aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+              region_name=os.environ.get("S3_REGION","auto"),
+              config=Config(signature_version="s3v4", s3={"addressing_style":"virtual"}),
+          )
+          body = f"hello from actions at {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n"
+          s3.put_object(Bucket=buck, Key=key, Body=body.encode(), ContentType="text/plain")
+          print("Wrote:", f"s3://{buck}/{key}")
+          PY
+        env:
+          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+          S3_BUCKET:       ${{ secrets.S3_BUCKET }}
+          S3_PREFIX:       ${{ secrets.S3_PREFIX }} # or hardcode "autocollect"
+          S3_REGION:       "auto"
+          AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
       - name: Run one collection pass
+        run: python actions_runner.py
         env:
-          # Experiment params (tune as you like)
-          QSW_TRIALS: "600"            # keep 600 if you extend timeout
-          QSW_PHASE_LEN: "8"
-          QSW_MAX_STEPS: "30"
-          QSW_BATCH: "256"
-          QSW_MAX_RETRIES: "12"
-          QSW_BACKOFF: "2.0"
-
-          # Pure QRNG, quantum-only
-          QSW_PURE: "1"
-          QSW_QRNG_PROVIDERS: "anu"
-          QSW_CONDITIONS: "quantum"
-          QSW_PURE_MAX_WAIT: "1500"    # ~25 min cap per blocking wait
-
-          # R2 creds (secrets)
           S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
           S3_REGION: "auto"
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
-          S3_PREFIX: ${{ secrets.S3_PREFIX }}
+          S3_PREFIX: ${{ secrets.S3_PREFIX }}  # must match Streamlit config
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        run: python actions_runner.py
-
-      - name: Summary
-        if: always()
-        run: |
-          echo "### Quantum Signal Walker — Latest Run" >> $GITHUB_STEP_SUMMARY
-          python - <<'PY' >> $GITHUB_STEP_SUMMARY
-          import pathlib, pandas as pd
-          runs = sorted(pathlib.Path("QSW_runs").glob("*_v2.7_actions_*"))
-          if not runs:
-              print("No run directory created.")
-          else:
-              latest = runs[-1]
-              try:
-                  df = pd.read_csv(latest/"results_summary.csv")
-                  qr = None
-                  if "quantum" in df["condition"].values:
-                      qr = float(df.loc[df["condition"]=="quantum","quantum_ratio"].fillna(0).values[0])
-                  files = sum(1 for _ in latest.rglob("*") if _.is_file())
-                  print(f"Run: {latest.name}  \nFiles: {files}  \nQuantum ratio: {qr}")
-              except Exception as e:
-                  print(f"Run: {latest.name}  \nError reading summary: {e}")
-          PY
+          QSW_TRIALS: 600
+          QSW_PHASE_LEN: 8
+          QSW_MAX_STEPS: 30
+          QSW_BATCH: 256
+          QSW_MAX_RETRIES: 12
+          QSW_BACKOFF: 2.0
+          QSW_PURE: 1
+          QSW_QRNG_PROVIDERS: anu
+          QSW_CONDITIONS: quantum
+          QSW_PURE_MAX_WAIT: 1500
