@@ -4,6 +4,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict
 from heartbeat_panel import render_heartbeat
+render_heartbeat()
 
 import numpy as np
 import pandas as pd
