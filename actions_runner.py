@@ -69,10 +69,19 @@ def r2_put_json(obj: dict, key: str):
     if not (S3_ENDPOINT_URL and S3_BUCKET and AWS_ACCESS_KEY and AWS_SECRET_KEY):
         return
     s3 = _r2()
-    import time as _t
+    import time as _t, json as _json
     payload = dict(obj)
     payload["ts_utc"] = _t.strftime("%Y-%m-%dT%H:%M:%SZ", _t.gmtime())
-    s3.put_object(Bucket=S3_BUCKET, Key=key, Body=json.dumps(payload, indent=2).encode(), ContentType="application/json")
+    try:
+        s3.put_object(
+            Bucket=S3_BUCKET,
+            Key=key,
+            Body=_json.dumps(payload, indent=2).encode(),
+            ContentType="application/json"
+        )
+        print(f"[R2] wrote {key}")
+    except Exception as e:
+        print(f"[R2] heartbeat failed for {key}: {e}")  # log and continue
 
 def heartbeat(payload: dict, in_progress=True):
     r2_put_json(payload, HEARTBEAT_INPROG if in_progress else HEARTBEAT_STABLE)
