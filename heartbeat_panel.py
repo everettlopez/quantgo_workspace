@@ -1,18 +1,13 @@
-# heartbeat_panel.py — R2 heartbeat panel with built-in diagnostics
-import json, time, traceback
+# heartbeat_panel.py — Streamlit panel for R2 heartbeat (no deprecations)
+import json, time
 import streamlit as st
-
-# You need boto3 in your Streamlit app; if missing add "boto3" to requirements.txt.
 import boto3
 from botocore.client import Config
-from botocore.exceptions import BotoCoreError, ClientError
+from botocore.exceptions import ClientError, BotoCoreError
 
 def _norm_endpoint(raw: str) -> str:
-    if not raw: return ""
-    ep = raw.strip().rstrip("/")
-    if not ep.startswith("http"):
-        ep = "https://" + ep
-    return ep
+    raw = (raw or "").strip().rstrip("/")
+    return raw if raw.startswith("http") else ("https://" + raw) if raw else ""
 
 def _r2_client():
     try:
@@ -22,8 +17,7 @@ def _r2_client():
             endpoint_url=endpoint,
             aws_access_key_id=st.secrets["AWS_ACCESS_KEY_ID"],
             aws_secret_access_key=st.secrets["AWS_SECRET_ACCESS_KEY"],
-            region_name=st.secrets.get("S3_REGION", "auto"),
-            # R2 generally prefers virtual-hosted addressing, v4 signing
+            region_name=st.secrets.get("S3_REGION","auto"),
             config=Config(signature_version="s3v4",
                           s3={"addressing_style": "virtual"},
                           retries={"max_attempts": 3, "mode": "standard"}),
@@ -37,8 +31,7 @@ def _get_json(bucket: str, key: str):
     if not s3: return None, "no_client"
     try:
         obj = s3.get_object(Bucket=bucket, Key=key)
-        data = obj["Body"].read().decode("utf-8")
-        return json.loads(data), None
+        return json.loads(obj["Body"].read().decode("utf-8")), None
     except ClientError as ce:
         return None, f"ClientError: {ce.response.get('Error', {}).get('Code', '?')}"
     except BotoCoreError as be:
@@ -51,54 +44,83 @@ def _list_status_keys(bucket: str, prefix: str):
     if not s3: return None, "no_client"
     try:
         pfx = prefix.rstrip("/") + "/_status/"
-        resp = s3.list_objects_v2(Bucket=bucket, Prefix=pfx, MaxKeys=10)
-        keys = [c["Key"] for c in resp.get("Contents", [])]
-        return keys, None
+        resp = s3.list_objects_v2(Bucket=bucket, Prefix=pfx, MaxKeys=25)
+        return [c["Key"] for c in resp.get("Contents", [])], None
     except Exception as e:
         return None, str(e)
+
+def _fmt_sec(s):
+    try:
+        s = int(s)
+        m, s = divmod(s, 60)
+        h, m = divmod(m, 60)
+        if h: return f"{h}h {m}m {s}s"
+        if m: return f"{m}m {s}s"
+        return f"{s}s"
+    except Exception:
+        return "—"
 
 def render_heartbeat(title="Collector status (R2 heartbeat)"):
     st.write(f"## {title}")
 
-    # Read config from secrets
-    bucket = st.secrets.get("S3_BUCKET", "").strip()
-    prefix = st.secrets.get("S3_PREFIX", "autocollect").strip().rstrip("/")
-    endpoint = _norm_endpoint(st.secrets.get("S3_ENDPOINT_URL", ""))
+    # Config
+    bucket = st.secrets.get("S3_BUCKET","").strip()
+    prefix = st.secrets.get("S3_PREFIX","autocollect").strip().rstrip("/")
+    endpoint = _norm_endpoint(st.secrets.get("S3_ENDPOINT_URL",""))
 
     with st.expander("Connection & path (diagnostics)", expanded=False):
         st.write("**Endpoint:**", f"`{endpoint or '(missing)'}`")
         st.write("**Bucket:**", f"`{bucket or '(missing)'}`")
         st.write("**Prefix:**", f"`{prefix or '(missing)'}`")
-        st.caption("These must match the runner’s env/secrets exactly.")
 
     auto = st.checkbox("Auto-refresh (every 10s)", value=True)
     if auto:
-        st.experimental_set_query_params(_=int(time.time() // 10))
+        # No deprecation warnings
+        st.query_params.update({"_hb": str(int(time.time() // 10))})
 
     inprog_key = f"{prefix}/_status/in_progress.json" if prefix else "_status/in_progress.json"
     latest_key = f"{prefix}/_status/latest.json"      if prefix else "_status/latest.json"
 
-    cols = st.columns(2)
-    with cols[0]:
+    c1, c2 = st.columns(2)
+
+    # In-progress pane
+    with c1:
         st.subheader("In-progress")
         ip, err_ip = _get_json(bucket, inprog_key)
         if ip:
-            st.info(f"Phase **{ip.get('phase','?')}** — {ip.get('condition','?')} "
-                    f"{ip.get('trial_idx','?')}/{ip.get('n_trials','?')}")
-            st.write(f"Updated (UTC): `{ip.get('ts_utc','?')}`")
+            phase = ip.get("phase","started")
+            cond  = ip.get("condition","—")
+            i     = int(ip.get("trial_idx", 0) or 0)
+            n     = int(ip.get("n_trials", 0) or 0)
+            pr    = float(ip.get("progress", 0) or 0.0)
+            el    = ip.get("elapsed_sec","—")
+            pure  = ip.get("pure", False)
+            provs = ", ".join(ip.get("providers", []) or [])
+            qn    = ip.get("q_counts", 0); nq = ip.get("nq_counts", 0); fb = ip.get("fallback_counts", 0)
+
+            st.info(f"Phase **{phase}** — {cond} {i}/{n}  •  Pure: `{pure}`  •  Providers: `{provs}`")
+            st.progress(min(max(pr, 0.0), 1.0), text=f"{int(pr*100)}%")
+            st.write(f"Elapsed: `{_fmt_sec(el)}`")
+            st.write(f"QRNG counts — true:`{qn}`  nonquantum:`{nq}`  fallback:`{fb}`")
+            st.code(f"s3://{bucket}/{inprog_key}", language="text")
         else:
             st.write("No in-progress heartbeat found.")
             st.code(f"s3://{bucket}/{inprog_key}", language="text")
             if err_ip: st.caption(f"Fetch error: {err_ip}")
 
-    with cols[1]:
+    # Last finished pane
+    with c2:
         st.subheader("Last finished")
         lt, err_lt = _get_json(bucket, latest_key)
         if lt:
-            st.success(f"Run **{lt.get('run_dir','?')}** — Files **{lt.get('files','?')}**")
-            st.write(f"Quantum ratio: **{lt.get('quantum_ratio','n/a')}**")
-            st.write(f"Updated (UTC): `{lt.get('ts_utc','?')}`")
-            st.code(f"s3://{bucket}/{prefix}/{lt.get('run_dir','')}", language="text")
+            run_dir = lt.get("run_dir","—")
+            files   = lt.get("files","—")
+            qr      = lt.get("quantum_ratio","n/a")
+            elfin   = lt.get("elapsed_sec","—")
+            ts      = lt.get("ts_utc","—")
+            st.success(f"Run **{run_dir}** — Files **{files}** — Quantum ratio **{qr}**")
+            st.write(f"Finished in: `{_fmt_sec(elfin)}`  •  Updated (UTC): `{ts}`")
+            st.code(f"s3://{bucket}/{prefix}/{run_dir}", language="text")
         else:
             st.write("No finished run recorded yet.")
             st.code(f"s3://{bucket}/{latest_key}", language="text")
@@ -108,11 +130,10 @@ def render_heartbeat(title="Collector status (R2 heartbeat)"):
         keys, err_ls = _list_status_keys(bucket, prefix)
         if keys is not None:
             if keys:
-                for k in keys:
-                    st.write("•", k)
+                for k in keys: st.write("•", k)
             else:
                 st.write("(no objects found under _status/)")
         else:
             st.caption(f"List error: {err_ls}")
 
-    st.caption("Tip: If keys aren’t found, check that your runner and app use the **same** bucket and prefix.")
+    st.caption("UI build: v2.8 — heartbeat_panel.py")
