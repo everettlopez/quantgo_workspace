@@ -2,10 +2,10 @@ name: qsw-collector
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # every 30 minutes
-  workflow_dispatch: {}
+    - cron: "*/30 * * * *"     # every 30 minutes
+  workflow_dispatch: {}         # allow manual runs too
 
-# No overlaps — if a run is still going, the next queues
+# Never overlap: if one run is still going, the next queues
 concurrency:
   group: qsw-collector
   cancel-in-progress: false
@@ -27,6 +27,15 @@ jobs:
           pip install -r requirements.txt || true
           pip install boto3 pandas matplotlib scikit-learn
 
+      # --------- Secrets preflight (your request #3) ---------
+      - name: Validate R2 secrets
+        run: |
+          test -n "${{ secrets.S3_ENDPOINT_URL }}" || (echo "Missing S3_ENDPOINT_URL" && exit 1)
+          test -n "${{ secrets.S3_BUCKET }}"       || (echo "Missing S3_BUCKET" && exit 1)
+          test -n "${{ secrets.S3_PREFIX }}"       || (echo "Missing S3_PREFIX" && exit 1)
+          test -n "${{ secrets.AWS_ACCESS_KEY_ID }}" || (echo "Missing AWS_ACCESS_KEY_ID" && exit 1)
+          test -n "${{ secrets.AWS_SECRET_ACCESS_KEY }}" || (echo "Missing AWS_SECRET_ACCESS_KEY" && exit 1)
+
       - name: Run one collection pass
         env:
           # Experiment params
@@ -37,13 +46,13 @@ jobs:
           QSW_MAX_RETRIES: "12"
           QSW_BACKOFF: "2.0"
 
-          # Pure QRNG + providers
+          # Pure QRNG + providers + quantum-only
           QSW_PURE: "1"
           QSW_QRNG_PROVIDERS: "anu"
-          QSW_PURE_MAX_WAIT: "1500"   # ~25 min cap on CI; 0 = infinite
           QSW_CONDITIONS: "quantum"
+          QSW_PURE_MAX_WAIT: "1500"   # ~25 min cap on CI (set 0 for infinite)
 
-          # R2 creds
+          # R2 creds (from repo secrets)
           S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
           S3_REGION: "auto"
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
@@ -58,10 +67,18 @@ jobs:
           echo "### Quantum Signal Walker — Latest Run" >> $GITHUB_STEP_SUMMARY
           python - <<'PY' >> $GITHUB_STEP_SUMMARY
           import pathlib, pandas as pd
-          latest = sorted(pathlib.Path("QSW_runs").glob("*_v2.7_actions_*"))[-1]
-          df = pd.read_csv(latest/"results_summary.csv")
-          qr = None
-          try: qr = float(df.loc[df["condition"]=="quantum","quantum_ratio"].fillna(0).values[0])
-          except Exception: pass
-          print(f"Run: {latest.name}  \nFiles: {sum(1 for _ in latest.rglob('*') if _.is_file())}  \nQuantum ratio: {qr}")
+          runs = sorted(pathlib.Path("QSW_runs").glob("*_v2.7_actions_*"))
+          if not runs:
+              print("No run directory created.")
+          else:
+              latest = runs[-1]
+              try:
+                  df = pd.read_csv(latest/"results_summary.csv")
+                  qr = None
+                  if "quantum" in df["condition"].values:
+                      qr = float(df.loc[df["condition"]=="quantum","quantum_ratio"].fillna(0).values[0])
+                  files = sum(1 for _ in latest.rglob("*") if _.is_file())
+                  print(f"Run: {latest.name}  \nFiles: {files}  \nQuantum ratio: {qr}")
+              except Exception as e:
+                  print(f"Run: {latest.name}  \nError reading summary: {e}")
           PY
