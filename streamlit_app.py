@@ -1,37 +1,60 @@
-# streamlit_app.py — QSW v2.5 (self-contained)
-# - Live Quantum Ratio panel (no extra draws)
-# - Optional Warmup mode
-# - Multi-QRNG provider picker from Secrets
-# - Uses only in-repo modules: qsw_go_nogo_v2/qrng_client_v2.py, agent_workspace_hebbs.py, tasks_impasse.py
-
-import os, io, time, zipfile, shutil
-from datetime import datetime
+# streamlit_app.py — QSW v2.7 (keeps v2.5 layout, adds Pure QRNG + autosave + per-trial logging)
+import os, time, zipfile, shutil, json, csv, hashlib
 from pathlib import Path
-
+from datetime import datetime
+from typing import Dict
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import streamlit as st
 
-# ---------- Basic setup ----------
-st.set_page_config(page_title="QSW v2.5 — Quantum Go/No-Go", layout="wide")
+st.set_page_config(page_title="QSW v2.7 — Quantum Go/No-Go", layout="wide")
+st.caption(f"UI build: v2.7 • main={__file__}")
+
 APP_DIR = Path(__file__).resolve().parent
 TARGET_DIR = APP_DIR / "qsw_go_nogo_v2"
+RUNS_ROOT = APP_DIR / "QSW_runs"
+RUNS_ROOT.mkdir(parents=True, exist_ok=True)
 
-st.title("QSW v2.5 — Quantum Go/No-Go (Streamlit)")
+# ---------- helpers (saving/artifacts) ----------
+def _safe_name(s: str) -> str:
+    return "".join(ch for ch in str(s) if ch.isalnum() or ch in "-_,")
 
-# ---------- Secrets → env (providers) ----------
+def _new_run_dir(version_tag="v2.7_streamlit", label=""):
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    lbl = f"_{_safe_name(label)}" if label else ""
+    p = RUNS_ROOT / f"{ts}_{version_tag}{lbl}"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+def _write_json(path: Path, obj: Dict):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2, ensure_ascii=False)
+
+def _file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def _archive_run(out_dir: Path) -> Path:
+    zpath = out_dir.with_suffix(".zip")
+    with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
+        for p in out_dir.rglob("*"):
+            z.write(p, p.relative_to(out_dir.parent))
+    return zpath
+
+# ---------- providers from Secrets (non-fatal) ----------
 def load_qrng_from_secrets():
     cfg = st.secrets.get("qrng", {})
-    prov_list = cfg.get("providers", ["anu"])
-    os.environ["QSW_QRNG_PROVIDERS"] = ",".join(prov_list)
+    provs = cfg.get("providers", ["anu"])
+    os.environ["QSW_QRNG_PROVIDERS"] = ",".join(provs)
 
-    # ANU
     if "anu" in cfg:
         os.environ["QSW_ANU_URL"] = cfg["anu"].get("url", "https://qrng.anu.edu.au/API/jsonI.php")
         os.environ["QSW_ANU_DATA_KEY"] = cfg["anu"].get("data_key", "data")
 
-    # First JSON-like source (IDQ or generic)
     for name in ("idq", "json"):
         if name in cfg:
             sub = cfg[name]
@@ -45,71 +68,93 @@ def load_qrng_from_secrets():
             os.environ["QSW_JSON_AUTH_HEADER"] = sub.get("auth_header", "Authorization")
             os.environ["QSW_JSON_AUTH_PREFIX"] = sub.get("auth_prefix", "Bearer")
             break
+    return provs
 
-    return prov_list
-
-PROVIDER_OPTIONS = load_qrng_from_secrets()
-
-# ---------- Ensure project files are present (optional ZIP upload) ----------
-def unpack_bundle(zpath: Path):
-    try:
-        with zipfile.ZipFile(zpath, "r") as z:
-            z.extractall(APP_DIR)
-        # normalize path if extracted elsewhere
-        found = None
-        for root, dirs, files in os.walk(APP_DIR):
-            if os.path.basename(root) == "qsw_go_nogo_v2":
-                found = Path(root); break
-        if found and found != TARGET_DIR:
-            if TARGET_DIR.exists():
-                shutil.rmtree(TARGET_DIR)
-            shutil.move(str(found), str(TARGET_DIR))
-        return TARGET_DIR.is_dir()
-    except Exception as e:
-        st.error(f"Unpack failed: {e}")
-        return False
-
-if not TARGET_DIR.is_dir():
+# ---------- require project folder but don’t hard-stop the whole UI ----------
+def ensure_project_folder():
+    if TARGET_DIR.is_dir():
+        return True
     st.warning("Project folder 'qsw_go_nogo_v2' not found. Upload a ZIP containing that folder.")
     up = st.file_uploader("Upload project ZIP", type=["zip"])
     if up is not None:
         tmp = APP_DIR / "uploaded_qsw_bundle.zip"
-        with open(tmp, "wb") as f:
-            f.write(up.read())
-        if unpack_bundle(tmp):
-            st.success("Bundle unpacked. Use the top-right menu → **Rerun**.")
-    st.stop()
+        with open(tmp, "wb") as f: f.write(up.read())
+        try:
+            with zipfile.ZipFile(tmp, "r") as z: z.extractall(APP_DIR)
+            found = None
+            for root, _, _ in os.walk(APP_DIR):
+                if os.path.basename(root) == "qsw_go_nogo_v2":
+                    found = Path(root); break
+            if found and found != TARGET_DIR:
+                if TARGET_DIR.exists(): shutil.rmtree(TARGET_DIR)
+                shutil.move(str(found), str(TARGET_DIR))
+            if TARGET_DIR.is_dir():
+                st.success("Bundle unpacked. Use the top-right menu → **Rerun**.")
+                return True
+        except Exception as e:
+            st.error(f"Unpack failed: {e}")
+    return TARGET_DIR.is_dir()
 
-# ---------- Import actual in-repo modules ----------
-import sys
-if str(TARGET_DIR) not in sys.path:
-    sys.path.insert(0, str(TARGET_DIR))
+# ---------- Imports (soft) ----------
+ok_proj = ensure_project_folder()
+if ok_proj:
+    import sys
+    if str(TARGET_DIR) not in sys.path: sys.path.insert(0, str(TARGET_DIR))
+    from importlib import reload
+    try:
+        import qrng_client_v2, agent_workspace_hebbs, tasks_impasse
+        reload(qrng_client_v2); reload(agent_workspace_hebbs); reload(tasks_impasse)
+        from qsw_go_nogo_v2.qrng_client_v2 import QRNGClient
+        from agent_workspace_hebbs import WorkspaceAgentHebb
+        from tasks_impasse import ImpasseEscapeTask, shannon_diversity
+        from sklearn.metrics import mutual_info_score
+        st.caption("Modules: OK")
+        has_modules = True
+    except Exception as e:
+        st.error(f"Import error: {type(e).__name__}: {e}")
+        has_modules = False
+else:
+    has_modules = False
 
-from importlib import reload
-import qrng_client_v2, agent_workspace_hebbs, tasks_impasse
-reload(qrng_client_v2); reload(agent_workspace_hebbs); reload(tasks_impasse)
-from qsw_go_nogo_v2.qrng_client_v2 import QRNGClient
-from agent_workspace_hebbs import WorkspaceAgentHebb
-from tasks_impasse import ImpasseEscapeTask, shannon_diversity
-from sklearn.metrics import mutual_info_score
+# ---------- Title ----------
+st.title("QSW — Quantum Go/No-Go")
 
-# ---------- Helpers defined here ----------
-def save_bar(df, col, title, ylabel, path):
-    fig, ax = plt.subplots()
-    ax.bar(df["condition"], df[col])
-    ax.set_title(title)
-    ax.set_xlabel("Condition")
-    ax.set_ylabel(ylabel)
-    fig.savefig(path, bbox_inches="tight")
-    plt.close(fig)
+# ---------- Sidebar (providers + purity + params) ----------
+PROVIDER_OPTIONS = load_qrng_from_secrets() if has_modules else ["anu"]
 
-# Live panel that shows ratio from an existing QRNGClient (no extra draws)
+st.sidebar.header("Providers & Purity")
+prov_choices = st.sidebar.multiselect(
+    "Quantum providers (priority order)",
+    options=PROVIDER_OPTIONS,
+    default=PROVIDER_OPTIONS
+)
+quantum_only = st.sidebar.checkbox("Pure QRNG (no PRNG fallback)", True)
+
+st.sidebar.header("Presets")
+c1, c2, c3 = st.sidebar.columns(3)
+if c1.button("Short Test"):     st.session_state.update(dict(trials=250, phase_len=6,  max_steps=30, batch_run=256, max_retries=6, backoff=1.8))
+if c2.button("Standard Run"):   st.session_state.update(dict(trials=600, phase_len=8,  max_steps=30, batch_run=512, max_retries=8, backoff=1.8))
+if c3.button("Deep Scan"):      st.session_state.update(dict(trials=1500,phase_len=12, max_steps=30, batch_run=512, max_retries=10, backoff=2.0))
+
+st.sidebar.header("Parameters")
+trials      = st.sidebar.number_input("Trials per condition", min_value=50, value=st.session_state.get("trials", 600), step=50)
+phase_len   = st.sidebar.number_input("Phase length", min_value=3,  value=st.session_state.get("phase_len", 8))
+max_steps   = st.sidebar.number_input("Max steps per trial", min_value=10, value=st.session_state.get("max_steps", 30))
+batch_run   = st.sidebar.number_input("Runtime batch size", min_value=64, value=st.session_state.get("batch_run", 512), step=64)
+max_retries = st.sidebar.number_input("Max retries/refill", min_value=3,  value=st.session_state.get("max_retries", 8))
+backoff     = st.sidebar.number_input("Backoff factor", min_value=1.0, value=st.session_state.get("backoff", 1.8), step=0.1, format="%.1f")
+min_qratio  = st.sidebar.slider("Min acceptable quantum ratio (advisory)", 0.0, 1.0, 0.8, 0.05)
+warmup_toggle = st.sidebar.checkbox("Warm up quantum source before run", True)
+
+st.sidebar.header("Per-trial logging")
+save_trials = st.sidebar.checkbox("Save per-trial details", True)
+save_gates  = st.sidebar.checkbox("Also save full gate sequences (large)", False)
+
+# ---------- Mini ratio panel maker ----------
 def make_ratio_panel():
     box = st.container()
     cols = box.columns(3)
-    ratio_metric = cols[0].metric
-    q_metric     = cols[1].metric
-    fb_metric    = cols[2].metric
+    ratio_metric = cols[0].metric; q_metric = cols[1].metric; fb_metric = cols[2].metric
     chart = box.line_chart({"quantum_ratio": []})
     def update_from_client(src):
         q  = getattr(src, "true_quantum_count", 0)
@@ -123,47 +168,56 @@ def make_ratio_panel():
         chart.add_rows({"quantum_ratio": [ratio]})
     return update_from_client
 
+# ---------- Core run function (aligned with your v2.5 logic) ----------
 def run_condition(n_trials, condition, seed, phase_len, max_steps,
                   batch_run, max_retries, backoff, providers,
-                  ratio_cb=None, warmup=False):
+                  ratio_cb=None, quantum_only=True, warmup=True,
+                  save_trials=True, save_gates=False):
     rng = np.random.default_rng(seed)
     successes, times, sequences = 0, [], []
     early_gates, late_outcomes = [], []
+
+    trial_rows, gate_rows = [], []
 
     # Build source
     if condition == "quantum":
         src = QRNGClient('quantum', batch_size=batch_run, max_retries=max_retries,
                          backoff=backoff, providers=providers)
+        try:
+            if quantum_only and hasattr(src, "set_quantum_only"):
+                src.set_quantum_only(True)
+        except Exception:
+            pass
     elif condition == "pseudo":
         src = QRNGClient('pseudo')
     else:
         src = QRNGClient('deterministic')
 
-    # Optional warmup (small draw + pause) — uses SAME client to avoid double-dipping
+    # Optional warmup
     if condition == "quantum" and warmup:
-        for _ in range(50):  # tiny touch
-            _ = src.next()
-        time.sleep(15)
+        for _ in range(50): _ = src.next()
+        time.sleep(10)
 
-    # Gate function (works with or without internal buffer)
     def next_gate():
-        v = src.next()
-        v = float(v) * 1.5
+        v = float(src.next()) * 1.5
         return 0.0 if v < 0 else 1.0 if v > 1 else v
 
-    # optional live panel updater (uses the same client; no extra draws)
     update = ratio_cb if callable(ratio_cb) else (lambda *_: None)
 
     prog = st.progress(0, text=f"{condition}: starting…")
     for i in range(1, n_trials + 1):
         agent = WorkspaceAgentHebb(seed=int(rng.integers(0, 1_000_000_000)))
         task  = ImpasseEscapeTask(seed=int(rng.integers(0, 1_000_000_000)), phase_len=phase_len)
+
         actions, time_to_escape, success = [], None, False
+        gates_this_trial = [] if save_gates else None
 
         for t in range(max_steps):
             ctx = tuple(actions[-3:]) if actions else None
             g = next_gate()
+            if gates_this_trial is not None: gates_this_trial.append(g)
             if t < 4: early_gates.append(g)
+
             a, probs = agent.step(g, ctx)
             actions.append(a)
             if len(actions) >= task.phase_len:
@@ -174,27 +228,42 @@ def run_condition(n_trials, condition, seed, phase_len, max_steps,
                     success = True; break
 
         if success: successes += 1
-        times.append(time_to_escape if time_to_escape is not None else max_steps)
-        sequences.append(tuple(actions))
+        tt = time_to_escape if time_to_escape is not None else max_steps
+        times.append(tt)
+        seq = tuple(actions)
+        sequences.append(seq)
         late_outcomes.append(1 if success else 0)
 
-        # UI pacing
+        if save_trials:
+            trial_rows.append({
+                "condition": condition,
+                "trial_idx": i,
+                "success": int(success),
+                "time_to_escape": int(tt),
+                "seq_len": len(seq)
+            })
+        if save_gates and gates_this_trial is not None:
+            gate_rows.append({
+                "condition": condition,
+                "trial_idx": i,
+                "gates": ",".join(f"{x:.3f}" for x in gates_this_trial)
+            })
+
+        # UI & live ratio
         if i % max(1, n_trials // 20) == 0 or i == n_trials:
             prog.progress(int(100 * i / n_trials), text=f"{condition}: {i}/{n_trials}")
-        # Update live ratio panel ~25× per run (no extra draws)
-        if condition == "quantum" and (i % max(1, n_trials // 25) == 0 or i == n_trials):
-            update(src)
+        if condition == "quantum":
+            step = max(1, n_trials // 10)
+            if (i % step == 0) or (i == n_trials): update(src)
 
-    # Metrics
+    # Aggregate metrics
     H, unique = shannon_diversity(sequences)
     eg = np.array(early_gates); bins = np.linspace(0,1,6)
     dig = np.digitize(eg, bins)-1 if len(eg) else np.array([])
     lo = np.repeat(late_outcomes, 4)
     L = min(len(dig), len(lo))
-    try:
-        mi = float(mutual_info_score(dig[:L], lo[:L])) if L>1 else 0.0
-    except Exception:
-        mi = 0.0
+    try: mi = float(mutual_info_score(dig[:L], lo[:L])) if L>1 else 0.0
+    except Exception: mi = 0.0
 
     # Telemetry
     q_ratio = None
@@ -217,79 +286,137 @@ def run_condition(n_trials, condition, seed, phase_len, max_steps,
         "q_counts": int(q_counts or 0),
         "nq_counts": int(nq_counts or 0),
         "fallback_counts": int(f_counts or 0),
+        "_trial_rows": trial_rows,
+        "_gate_rows": gate_rows
     }
 
-# ---------- Sidebar controls (safer defaults) ----------
-st.sidebar.header("Controls")
-prov_choices = st.sidebar.multiselect(
-    "Quantum providers (priority order)",
-    options=PROVIDER_OPTIONS,
-    default=PROVIDER_OPTIONS
-)
-trials      = st.sidebar.slider("Trials per condition", 100, 2000, 600, 100)
-phase_len   = st.sidebar.slider("Phase length", 6, 20, 6, 1)           # safer for QRNG load
-max_steps   = st.sidebar.slider("Max steps per trial", 20, 60, 30, 1)
-batch_run   = st.sidebar.slider("Runtime batch size", 128, 4096, 256, 128)  # smaller batch
-max_retries = st.sidebar.slider("Max retries/refill", 3, 12, 6, 1)
-backoff     = st.sidebar.slider("Backoff factor", 1.0, 3.0, 1.8, 0.1)
-min_qratio  = st.sidebar.slider("Min acceptable quantum ratio (advisory)", 0.0, 1.0, 0.8, 0.05)
-show_live_ratio = st.sidebar.checkbox("Show live quantum ratio during run (no extra draws)", True)
-warmup_toggle   = st.sidebar.checkbox("Warm up quantum source before run", True)
+# ---------- Run Experiment (keeps your v2.5 flow) ----------
+st.write("---")
+st.subheader("Run Experiment")
+c1, c2, c3 = st.columns(3)
+use_quantum = c1.checkbox("Run QUANTUM", True)
+use_pseudo  = c2.checkbox("Run PSEUDO (control)", False)
+use_deter   = c3.checkbox("Run DETERMINISTIC (control)", False)
 
-# ---------- Run ----------
-if st.button("Run QSW v2.5"):
+start_disabled = not has_modules
+if start_disabled:
+    st.warning("Missing modules in qsw_go_nogo_v2/. Upload your project ZIP, then Rerun.")
+
+if st.button("Start Run", disabled=start_disabled):
     conditions = []
-    if st.sidebar.checkbox("Run QUANTUM condition", True): conditions.append("quantum")
-    if st.sidebar.checkbox("Run PSEUDO condition", True):  conditions.append("pseudo")
-    if st.sidebar.checkbox("Run DETERMINISTIC condition", True): conditions.append("deterministic")
+    if use_quantum: conditions.append("quantum")
+    if use_pseudo:  conditions.append("pseudo")
+    if use_deter:   conditions.append("deterministic")
     if not conditions:
-        st.error("Select at least one condition."); st.stop()
+        st.error("Select at least one condition.")
+    else:
+        ratio_cb = make_ratio_panel() if ("quantum" in conditions) else None
 
-    ratio_cb = make_ratio_panel() if (show_live_ratio and "quantum" in conditions) else None
+        rows = []
+        for cond in conditions:
+            st.subheader(f"Running: {cond}")
+            rows.append(run_condition(
+                n_trials=trials, condition=cond, seed=0,
+                phase_len=phase_len, max_steps=max_steps,
+                batch_run=batch_run, max_retries=max_retries, backoff=backoff,
+                providers=prov_choices, ratio_cb=ratio_cb,
+                quantum_only=quantum_only, warmup=warmup_toggle,
+                save_trials=save_trials, save_gates=save_gates
+            ))
 
-    rows = []
-    for cond in conditions:
-        st.subheader(f"Running: {cond}")
-        rows.append(run_condition(trials, cond, seed=0, phase_len=phase_len, max_steps=max_steps,
-                                  batch_run=batch_run, max_retries=max_retries, backoff=backoff,
-                                  providers=prov_choices, ratio_cb=ratio_cb, warmup=warmup_toggle))
+        # Summary table (same as last night’s flow)
+        df = pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_")} for r in rows])
+        st.write("### Run Summary")
+        st.dataframe(df, use_container_width=True)
 
-    df = pd.DataFrame(rows)
-    st.write("### Results Summary")
-    st.dataframe(df)
+        # Advisory banner for quantum
+        if "quantum" in df["condition"].values:
+            qr = float(df.loc[df["condition"]=="quantum","quantum_ratio"].fillna(0).values[0])
+            if qr >= min_qratio:
+                st.success(f"Quantum source OK (quantum_ratio ≈ {qr:.3f}).")
+            elif qr >= 0.5:
+                st.warning(f"Quantum source partially degraded (quantum_ratio = {qr:.3f}).")
+            else:
+                st.error(f"Quantum source heavily degraded (quantum_ratio = {qr:.3f}).")
 
-    # Quality banner for quantum
-    if "quantum" in df["condition"].values:
-        qr = float(df.loc[df["condition"]=="quantum","quantum_ratio"].fillna(0).values[0])
-        if qr >= min_qratio:
-            st.success(f"Quantum source OK (quantum_ratio ≈ {qr:.3f}).")
-        elif qr >= 0.5:
-            st.warning(f"Quantum source partially degraded (quantum_ratio = {qr:.3f}).")
-        else:
-            st.error(f"Quantum source heavily degraded (quantum_ratio = {qr:.3f}).")
+        # ---- Organized save (keeps your v2.5 outputs & adds structure) ----
+        run_label = "qrng" if use_quantum and (not use_pseudo and not use_deter) else "mixed"
+        out_dir = _new_run_dir(version_tag="v2.7_streamlit", label=run_label)
 
-    # Save artifacts
-    out_dir = APP_DIR / "QSW_runs" / (datetime.utcnow().strftime("%Y%m%d_%H%M%S") + "_v2.5_streamlit")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = out_dir / "results_summary.csv"
-    df.to_csv(csv_path, index=False)
+        # 1) Save summary CSV
+        csv_path = out_dir / "results_summary.csv"
+        df.to_csv(csv_path, index=False)
 
-    # Plots
-    p1 = out_dir / "success_rate.png"
-    p2 = out_dir / "time_to_escape.png"
-    p3 = out_dir / "diversity_bits.png"
-    p4 = out_dir / "mi.png"
+        # 2) Per-trial & gates (optional) — compressed
+        all_trials, all_gates = [], []
+        for r in rows:
+            trs = r.get("_trial_rows") or []
+            gts = r.get("_gate_rows") or []
+            if trs: all_trials.extend(trs)
+            if gts: all_gates.extend(gts)
+        if all_trials:
+            (out_dir / "raw").mkdir(exist_ok=True)
+            pd.DataFrame(all_trials).to_csv(out_dir / "raw" / "raw_trials.csv.gz",
+                                            index=False, compression="gzip")
+        if all_gates:
+            (out_dir / "raw").mkdir(exist_ok=True)
+            pd.DataFrame(all_gates).to_csv(out_dir / "raw" / "raw_gates.csv.gz",
+                                           index=False, compression="gzip")
 
-    def _save(col, title, ylabel, path): save_bar(df, col, title, ylabel, str(path))
-    _save("success_rate", "Success Rate — Impasse Escape (v2.5)", "Success Rate", p1)
-    _save("avg_time_to_escape", "Avg Time to Escape (lower=better)", "Avg Time to Escape", p2)
-    _save("diversity_bits", "Diversity (bits)", "Diversity (bits)", p3)
-    _save("early_gate_success_MI", "Early Gate ↔ Success MI (nats)", "MI (nats)", p4)
+        # 3) Plots (same placement and names as your v2.5)
+        def save_bar(df, col, title, ylabel, path):
+            fig, ax = plt.subplots()
+            ax.bar(df["condition"], df[col])
+            ax.set_title(title); ax.set_xlabel("Condition"); ax.set_ylabel(ylabel)
+            fig.savefig(path, bbox_inches="tight"); plt.close(fig)
 
-    st.write("### Plots")
-    c1, c2 = st.columns(2); c1.image(str(p1)); c2.image(str(p2))
-    c3, c4 = st.columns(2); c3.image(str(p3)); c4.image(str(p4))
+        p1 = out_dir / "success_rate.png"
+        p2 = out_dir / "time_to_escape.png"
+        p3 = out_dir / "diversity_bits.png"
+        p4 = out_dir / "mi.png"
+        def _save(col, title, ylabel, path): save_bar(df, col, title, ylabel, str(path))
+        _save("success_rate", "Success Rate — Impasse Escape (v2.7)", "Success Rate", p1)
+        _save("avg_time_to_escape", "Avg Time to Escape (lower=better)", "Avg Time to Escape", p2)
+        _save("diversity_bits", "Diversity (bits)", p3.name.replace(".png",""), p3)  # ylabel shown as title for compactness
+        _save("early_gate_success_MI", "Early Gate ↔ Success MI (nats)", "MI (nats)", p4)
 
-    st.write("### Downloads")
-    with open(csv_path, "rb") as f:
-        st.download_button("results_summary.csv", f, file_name=csv_path.name, mime="text/csv")
+        # Plots shown in the same way as last night
+        st.write("### Plots")
+        c1, c2 = st.columns(2); c1.image(str(p1)); c2.image(str(p2))
+        c3, c4 = st.columns(2); c3.image(str(p3)); c4.image(str(p4))
+
+        # 4) Metadata & manifest
+        meta = {
+            "ts_utc": datetime.utcnow().isoformat()+"Z",
+            "app_version": "v2.7_streamlit",
+            "providers": prov_choices,
+            "quantum_only": bool(quantum_only),
+            "logging": {"save_trials": bool(save_trials), "save_gates": bool(save_gates)},
+            "params": {
+                "trials": int(trials), "phase_len": int(phase_len),
+                "max_steps": int(max_steps), "batch": int(batch_run),
+                "retries": int(max_retries), "backoff": float(backoff),
+                "warmup": bool(warmup_toggle),
+                "conditions": {"quantum": bool(use_quantum), "pseudo": bool(use_pseudo), "deterministic": bool(use_deter)}
+            },
+            "results": df.to_dict(orient="records")
+        }
+        _write_json(out_dir / "metadata.json", meta)
+
+        manifest = {}
+        def add_manifest(p: Path):
+            if p.exists(): manifest[p.name] = {"sha256": _file_sha256(p), "bytes": p.stat().st_size}
+        for p in [csv_path, p1, p2, p3, p4, out_dir / "metadata.json"]:
+            add_manifest(p)
+        if (out_dir / "raw" / "raw_trials.csv.gz").exists(): add_manifest(out_dir / "raw" / "raw_trials.csv.gz")
+        if (out_dir / "raw" / "raw_gates.csv.gz").exists():  add_manifest(out_dir / "raw" / "raw_gates.csv.gz")
+        _write_json(out_dir / "manifest.json", manifest)
+
+        # 5) Archive + Downloads (keeps your v2.5 “downloads” section feel)
+        zip_path = _archive_run(out_dir)
+
+        st.write("### Downloads")
+        with open(csv_path, "rb") as f:
+            st.download_button("results_summary.csv", f, file_name=csv_path.name, mime="text/csv")
+        with open(zip_path, "rb") as f:
+            st.download_button("full_run.zip", f, file_name=zip_path.name, mime="application/zip")
