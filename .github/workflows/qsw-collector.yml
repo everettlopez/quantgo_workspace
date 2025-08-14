@@ -35,6 +35,38 @@ jobs:
           test -n "${{ secrets.AWS_ACCESS_KEY_ID }}" || (echo "Missing AWS_ACCESS_KEY_ID" && exit 1)
           test -n "${{ secrets.AWS_SECRET_ACCESS_KEY }}" || (echo "Missing AWS_SECRET_ACCESS_KEY" && exit 1)
 
+      - name: R2 preflight — write test object
+  run: |
+    python - <<'PY'
+    import os, json, time
+    import boto3
+    from botocore.client import Config
+
+    ep   = os.environ["S3_ENDPOINT_URL"].strip().rstrip("/")
+    buck = os.environ["S3_BUCKET"]
+    pfx  = os.environ.get("S3_PREFIX","autocollect").strip().rstrip("/")
+    key  = f"{pfx}/_status/preflight_{int(time.time())}.txt"
+
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=ep if ep.startswith("http") else "https://" + ep,
+        aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+        region_name=os.environ.get("S3_REGION","auto"),
+        config=Config(signature_version="s3v4", s3={"addressing_style":"virtual"}),
+    )
+    body = f"hello from actions at {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n"
+    s3.put_object(Bucket=buck, Key=key, Body=body.encode(), ContentType="text/plain")
+    print("Wrote:", f"s3://{buck}/{key}")
+    PY
+  env:
+    S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+    S3_BUCKET:       ${{ secrets.S3_BUCKET }}
+    S3_PREFIX:       ${{ secrets.S3_PREFIX }}   # or remove this line if you hardcoded it in env above
+    S3_REGION:       "auto"
+    AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+    AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
       - name: Run one collection pass
         env:
           # Experiment params (tune as you like)
