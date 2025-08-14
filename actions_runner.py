@@ -45,13 +45,20 @@ AWS_SECRET_KEY  = os.getenv("AWS_SECRET_ACCESS_KEY")
 def _r2():
     import boto3
     from botocore.client import Config
+    endpoint = (S3_ENDPOINT_URL or "").strip().rstrip("/")  # trim spaces + no trailing slash
+    if endpoint and not endpoint.startswith("http"):
+        endpoint = "https://" + endpoint
     return boto3.client(
         "s3",
-        endpoint_url=S3_ENDPOINT_URL,
+        endpoint_url=endpoint,
         aws_access_key_id=AWS_ACCESS_KEY,
         aws_secret_access_key=AWS_SECRET_KEY,
-        region_name=S3_REGION,
-        config=Config(signature_version="s3v4", s3={"addressing_style":"path"}),
+        region_name=S3_REGION or "auto",
+        config=Config(
+            signature_version="s3v4",
+            s3={"addressing_style": "virtual"},   # works best with R2
+            retries={"max_attempts": 3, "mode": "standard"},
+        ),
     )
 
 # ---------- Heartbeat helpers ----------
