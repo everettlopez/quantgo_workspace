@@ -41,6 +41,7 @@ jobs:
           QSW_PURE: "1"
           QSW_QRNG_PROVIDERS: "anu"
           QSW_PURE_MAX_WAIT: "1500"   # ~25 min cap on CI; 0 = infinite
+          QSW_CONDITIONS: "quantum"
 
           # R2 creds
           S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
