@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-# Quantum Signal Walker — Actions Runner (v2.8 heartbeat-rich)
-# One-pass collector with R2 uploads + detailed live heartbeat
+# Quantum Signal Walker — Actions Runner (v2.8, single-folder / heartbeat-rich)
 
 import os, sys, json, hashlib, time
 from pathlib import Path
@@ -46,7 +45,7 @@ AWS_ACCESS_KEY  = (os.getenv("AWS_ACCESS_KEY_ID") or "").strip()
 AWS_SECRET_KEY  = (os.getenv("AWS_SECRET_ACCESS_KEY") or "").strip()
 
 def _r2():
-    """Create a hardened R2 S3 client (v4 signing, virtual-hosted style)."""
+    """Create an R2 S3 client (v4 signing, virtual-hosted style)."""
     import boto3
     from botocore.client import Config
     endpoint = S3_ENDPOINT_URL
@@ -65,12 +64,11 @@ def _r2():
         ),
     )
 
-# ---------- Heartbeat helpers ----------
+# ---------- Heartbeat ----------
 HB_STABLE = f"{S3_PREFIX}/_status/latest.json" if S3_PREFIX else "_status/latest.json"
 HB_INPROG = f"{S3_PREFIX}/_status/in_progress.json" if S3_PREFIX else "_status/in_progress.json"
 
 def _r2_put_json(obj: dict, key: str):
-    """Non-fatal JSON write to R2 (used by heartbeat)."""
     if not (S3_ENDPOINT_URL and S3_BUCKET and AWS_ACCESS_KEY and AWS_SECRET_KEY):
         print(f"[R2] Skipping write (missing config) key={key}")
         return
@@ -95,14 +93,15 @@ def heartbeat(state: dict, in_progress: bool = True):
 def _safe(s: str) -> str:
     return "".join(ch for ch in str(s) if ch.isalnum() or ch in "-_,")
 
-def _new_out_dir(label="actions"):
+def _new_out_dir(label=None):
+    """ONE RUN → ONE FOLDER. Use QSW_RUN_NAME or the joined CONDITIONS."""
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    d = RUNS_ROOT / f"{ts}_v2.8_actions_{_safe(label)}"
+    run_name = os.getenv("QSW_RUN_NAME") or (label or "-".join(CONDITIONS))
+    d = RUNS_ROOT / f"{ts}_v2.8_actions_{_safe(run_name)}"
     (d / "raw").mkdir(parents=True, exist_ok=True)
     return d
 
 def _sha256(path: Path) -> str:
-    import hashlib
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(8192), b""):
@@ -210,7 +209,6 @@ def run_condition(n_trials, condition, seed, phase_len, max_steps,
         if (i % hb_every) == 0:
             try:
                 elapsed = int(time.time() - t0) if t0 else None
-                # pull live QRNG counters if available
                 q_counts  = getattr(src, "true_quantum_count", None)
                 nq_counts = getattr(src, "nonquantum_count", None)
                 f_counts  = getattr(src, "fallback_count", None)
@@ -271,9 +269,9 @@ def main():
     print("[R2] bucket:", S3_BUCKET or "(missing)")
     print("[R2] prefix:", S3_PREFIX or "(missing)")
 
-    # start heartbeat (rich)
+    # start heartbeat
     t0 = time.time()
-    start_payload = {
+    heartbeat({
         "phase": "started",
         "conditions": CONDITIONS,
         "pure": bool(PURE_QRNG),
@@ -284,10 +282,9 @@ def main():
         },
         "elapsed_sec": 0,
         "progress": 0.0
-    }
-    heartbeat(start_payload, in_progress=True)
+    }, in_progress=True)
 
-    # run each condition
+    # run conditions back-to-back
     rows = []
     for cond in CONDITIONS:
         rows.append(run_condition(
@@ -298,9 +295,9 @@ def main():
             save_trials=True, hb_meta={"conditions": CONDITIONS}, hb_every=30, t0=t0
         ))
 
-    # summarize
+    # summarize (ONE FOLDER)
     df = pd.DataFrame([{k:v for k,v in r.items() if not k.startswith("_")} for r in rows])
-    out_dir = _new_out_dir(label=("qrng" if PURE_QRNG else "mixed"))
+    out_dir = _new_out_dir()  # uses QSW_RUN_NAME or "-".join(CONDITIONS)
     (out_dir / "results_summary.csv").write_text(df.to_csv(index=False))
 
     # raw trials
@@ -340,7 +337,7 @@ def main():
         manifest[rp.name] = {"sha256": _sha256(rp), "bytes": rp.stat().st_size}
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
-    # final heartbeat (stable)
+    # final heartbeat
     final_qr = None
     try:
         if "quantum" in df["condition"].values:
