@@ -2,10 +2,9 @@ name: qsw-collector
 
 on:
   schedule:
-    - cron: "*/30 * * * *"     # every 30 minutes
-  workflow_dispatch: {}         # allow manual runs too
+    - cron: "0 * * * *"        # every hour (was every 30 min)
+  workflow_dispatch: {}
 
-# Never overlap: if one run is still going, the next queues
 concurrency:
   group: qsw-collector
   cancel-in-progress: false
@@ -13,7 +12,8 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 300       # was 120 → allow up to 5 hours
+
     steps:
       - uses: actions/checkout@v4
 
@@ -27,7 +27,6 @@ jobs:
           pip install -r requirements.txt || true
           pip install boto3 pandas matplotlib scikit-learn
 
-      # --------- Secrets preflight (your request #3) ---------
       - name: Validate R2 secrets
         run: |
           test -n "${{ secrets.S3_ENDPOINT_URL }}" || (echo "Missing S3_ENDPOINT_URL" && exit 1)
@@ -38,21 +37,21 @@ jobs:
 
       - name: Run one collection pass
         env:
-          # Experiment params
-          QSW_TRIALS: "600"
+          # Experiment params (tune as you like)
+          QSW_TRIALS: "600"            # keep 600 if you extend timeout
           QSW_PHASE_LEN: "8"
           QSW_MAX_STEPS: "30"
           QSW_BATCH: "256"
           QSW_MAX_RETRIES: "12"
           QSW_BACKOFF: "2.0"
 
-          # Pure QRNG + providers + quantum-only
+          # Pure QRNG, quantum-only
           QSW_PURE: "1"
           QSW_QRNG_PROVIDERS: "anu"
           QSW_CONDITIONS: "quantum"
-          QSW_PURE_MAX_WAIT: "1500"   # ~25 min cap on CI (set 0 for infinite)
+          QSW_PURE_MAX_WAIT: "1500"    # ~25 min cap per blocking wait
 
-          # R2 creds (from repo secrets)
+          # R2 creds (secrets)
           S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
           S3_REGION: "auto"
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
