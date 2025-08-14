@@ -494,3 +494,5 @@ if st.button("Backup this run to Cloudflare R2"):
                         pass
             except Exception as e:
                 st.error(f"R2 backup failed: {e}")
+                # after you finish saving artifacts to `out_dir`:
+st.session_state['last_out_dir'] = str(out_dir)  # <-- remember the folder for backup
