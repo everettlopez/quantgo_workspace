@@ -17,6 +17,48 @@ RUNS_ROOT = APP_DIR / "QSW_runs"
 RUNS_ROOT.mkdir(parents=True, exist_ok=True)
 
 # ---------- helpers (saving/artifacts) ----------
+# === Cloudflare R2 (S3) helpers ===
+import boto3, mimetypes
+from botocore.client import Config
+from pathlib import Path
+import streamlit as st
+
+def _r2_client():
+    kwargs = {
+        "endpoint_url": st.secrets.get("S3_ENDPOINT_URL"),
+        "aws_access_key_id": st.secrets.get("AWS_ACCESS_KEY_ID"),
+        "aws_secret_access_key": st.secrets.get("AWS_SECRET_ACCESS_KEY"),
+        "region_name": st.secrets.get("S3_REGION", "auto"),
+        "config": Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+    }
+    return boto3.client("s3", **{k: v for k, v in kwargs.items() if v})
+
+def r2_upload_dir(local_dir: Path, bucket: str, prefix: str):
+    s3 = _r2_client()
+    uploaded, skipped = 0, []
+    for p in local_dir.rglob("*"):
+        if p.is_dir():
+            continue
+        rel = p.relative_to(local_dir).as_posix()
+        key = f"{prefix.rstrip('/')}/{local_dir.name}/{rel}"
+        ctype, _ = mimetypes.guess_type(p.name)
+        extra = {"ContentType": ctype} if ctype else {}
+        try:
+            # private by default; share with presigned URLs if needed
+            s3.upload_file(str(p), bucket, key, ExtraArgs=extra)
+            uploaded += 1
+        except Exception as e:
+            skipped.append((rel, str(e)))
+    return uploaded, skipped
+
+def r2_presign(bucket: str, key: str, expires_seconds: int = 3600):
+    s3 = _r2_client()
+    return s3.generate_presigned_url(
+        ClientMethod="get_object",
+        Params={"Bucket": bucket, "Key": key},
+        ExpiresIn=expires_seconds
+    )
+# === end R2 helpers ===
 def _safe_name(s: str) -> str:
     return "".join(ch for ch in str(s) if ch.isalnum() or ch in "-_,")
 
@@ -420,3 +462,35 @@ if st.button("Start Run", disabled=start_disabled):
             st.download_button("results_summary.csv", f, file_name=csv_path.name, mime="text/csv")
         with open(zip_path, "rb") as f:
             st.download_button("full_run.zip", f, file_name=zip_path.name, mime="application/zip")
+            # --- Backup to R2 (Cloudflare) ---
+st.write("### Backup")
+if st.button("Backup this run to Cloudflare R2"):
+    with st.spinner("Uploading artifacts to R2…"):
+        bucket = st.secrets.get("S3_BUCKET")
+        prefix = st.secrets.get("S3_PREFIX", "gsw/runs")
+        if not (bucket and st.secrets.get("S3_ENDPOINT_URL")):
+            st.error("Missing R2 secrets (S3_BUCKET / S3_ENDPOINT_URL / AWS keys).")
+        else:
+            try:
+                uploaded, skipped = r2_upload_dir(out_dir, bucket, prefix)
+                st.success(f"Uploaded {uploaded} files to r2://{bucket}/{prefix}/{out_dir.name}/")
+                if skipped:
+                    st.warning("Some files skipped:\n" + "\n".join([f"- {n}: {err}" for n, err in skipped[:10]]))
+
+                # Handy quick links (valid 1 hour)
+                keys = [
+                    f"{prefix}/{out_dir.name}/results_summary.csv",
+                    f"{prefix}/{out_dir.name}/metadata.json",
+                    f"{prefix}/{out_dir.name}/manifest.json",
+                    f"{prefix}/{out_dir.name}/success_rate.png",
+                    f"{prefix}/{out_dir.name}/time_to_escape.png",
+                ]
+                st.write("**Quick presigned links (1h):**")
+                for k in keys:
+                    try:
+                        url = r2_presign(bucket, k, 3600)
+                        st.write(f"- [{k.split('/')[-1]}]({url})")
+                    except Exception:
+                        pass
+            except Exception as e:
+                st.error(f"R2 backup failed: {e}")
