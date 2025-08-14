@@ -81,5 +81,6 @@ jobs:
           QSW_BACKOFF: 2.0
           QSW_PURE: 1
           QSW_QRNG_PROVIDERS: anu
-          QSW_CONDITIONS: quantum
+          QSW_CONDITIONS: quantum,pseudo,deterministic
           QSW_PURE_MAX_WAIT: 1500
+          QSW_RUN_NAME: all
