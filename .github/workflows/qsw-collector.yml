@@ -74,7 +74,7 @@ jobs:
           S3_PREFIX: ${{ secrets.S3_PREFIX }}  # must match Streamlit config
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          QSW_TRIALS: 600
+          QSW_TRIALS: 3000
           QSW_PHASE_LEN: 8
           QSW_MAX_STEPS: 30
           QSW_BATCH: 256
