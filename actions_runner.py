@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # Quantum Signal Walker — Actions Runner (v2.8, single-folder / heartbeat-rich)
 
 import os, sys, json, hashlib, time
@@ -337,6 +336,13 @@ def main():
     if rp.exists():
         manifest[rp.name] = {"sha256": _sha256(rp), "bytes": rp.stat().st_size}
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    # build concise investor PDF summary (non-fatal if it fails)
+    try:
+        pdf_path = generate_summary_pdf(out_dir)
+        print(f"[SUMMARY] wrote {pdf_path.name}")
+    except Exception as e:
+        print(f"[SUMMARY] failed (non-fatal): {e}")
+
 
     # final heartbeat
     final_qr = None
