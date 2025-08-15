@@ -286,6 +286,9 @@ def main():
 
     # run conditions back-to-back
     rows = []
+    
+    print(f"[RUN] TRIALS={TRIALS}  CONDITIONS={CONDITIONS}  PURE_QRNG={PURE_QRNG}  PROVIDERS={PROVIDERS}")
+    
     for cond in CONDITIONS:
         rows.append(run_condition(
             n_trials=TRIALS, condition=cond, seed=0,
