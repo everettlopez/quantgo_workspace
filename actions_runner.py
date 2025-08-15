@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.metrics import mutual_info_score
+from report_summary import generate_summary_pdf
 
 # ---------- Project path ----------
 ROOT = Path(__file__).resolve().parent
