@@ -83,9 +83,9 @@ jobs:
           QSW_PURE: "1"              # 1=pure, waits instead of falling back
           QSW_BATCH: "4096"          # ← bigger batches
           QSW_LOW_WATERMARK: "2048"  # ← keep buffer topped up
-          QSW_MAX_RETRIES: "12"
+          QSW_MAX_RETRIES: "20"
           QSW_BACKOFF: "2.0"
-          QSW_PURE_MAX_WAIT: "1500"
+          QSW_PURE_MAX_WAIT: "3600"
           # Optional tag
           QSW_RUN_NAME: "all"
         run: |
