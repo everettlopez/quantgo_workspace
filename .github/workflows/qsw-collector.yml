@@ -6,29 +6,27 @@ on:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    steps:
-      - name: Set up job
-        run: echo "Starting QSW Collector..."
+    timeout-minutes: 720  # ← 12h so pure-QRNG runs don't get canceled
 
+    steps:
       - name: Check out repo
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install boto3
-          pip install reportlab
+          pip install -r requirements.txt || true
+          pip install boto3 reportlab requests numpy pandas
 
       - name: Validate R2 secrets
         run: |
           test -n "${{ secrets.S3_ENDPOINT_URL }}" || (echo "Missing S3_ENDPOINT_URL" && exit 1)
-          test -n "${{ secrets.S3_BUCKET }}" || (echo "Missing S3_BUCKET" && exit 1)
+          test -n "${{ secrets.S3_BUCKET }}"       || (echo "Missing S3_BUCKET" && exit 1)
           test -n "${{ secrets.AWS_ACCESS_KEY_ID }}" || (echo "Missing AWS_ACCESS_KEY_ID" && exit 1)
           test -n "${{ secrets.AWS_SECRET_ACCESS_KEY }}" || (echo "Missing AWS_SECRET_ACCESS_KEY" && exit 1)
         shell: bash
@@ -60,28 +58,47 @@ jobs:
         env:
           S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
           S3_BUCKET:       ${{ secrets.S3_BUCKET }}
-          S3_PREFIX:       ${{ secrets.S3_PREFIX }} # or hardcode "autocollect"
+          S3_PREFIX:       ${{ secrets.S3_PREFIX }}
           S3_REGION:       "auto"
           AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
       - name: Run one collection pass
-        run: python actions_runner.py
         env:
-          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
-          S3_REGION: "auto"
-          S3_BUCKET: ${{ secrets.S3_BUCKET }}
-          S3_PREFIX: ${{ secrets.S3_PREFIX }}  # must match Streamlit config
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          QSW_TRIALS: 3000
-          QSW_PHASE_LEN: 8
-          QSW_MAX_STEPS: 30
-          QSW_BATCH: 256
-          QSW_MAX_RETRIES: 12
-          QSW_BACKOFF: 2.0
-          QSW_PURE: 1
-          QSW_QRNG_PROVIDERS: anu
-          QSW_CONDITIONS: quantum,pseudo,deterministic
-          QSW_PURE_MAX_WAIT: 1500
-          QSW_RUN_NAME: all
+          # R2
+          S3_ENDPOINT_URL:        ${{ secrets.S3_ENDPOINT_URL }}
+          S3_REGION:              "auto"
+          S3_BUCKET:              ${{ secrets.S3_BUCKET }}
+          S3_PREFIX:              ${{ secrets.S3_PREFIX }}
+          AWS_ACCESS_KEY_ID:      ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY:  ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          # Experiment knobs
+          QSW_TRIALS: "3000"                # ← per condition
+          QSW_TRIALS_MODE: "per_condition"  # or "total"
+          QSW_PHASE_LEN: "8"
+          QSW_MAX_STEPS: "30"
+          QSW_CONDITIONS: "quantum,pseudo,deterministic"
+          # QRNG client tuning
+          QSW_QRNG_PROVIDERS: "anu"
+          QSW_PURE: "1"              # 1=pure, waits instead of falling back
+          QSW_BATCH: "4096"          # ← bigger batches
+          QSW_LOW_WATERMARK: "2048"  # ← keep buffer topped up
+          QSW_MAX_RETRIES: "12"
+          QSW_BACKOFF: "2.0"
+          QSW_PURE_MAX_WAIT: "1500"
+          # Optional tag
+          QSW_RUN_NAME: "all"
+        run: |
+          python actions_runner.py
+
+      - name: Upload logs/artifacts (always)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: collector-logs
+          path: |
+            QSW_runs/**/_status/**
+            QSW_runs/**/results_summary.csv
+            QSW_runs/**/metadata.json
+            QSW_runs/**/manifest.json
+            QSW_runs/**/raw/**
