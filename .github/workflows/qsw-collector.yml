@@ -1,17 +1,21 @@
 name: QSW Collector
-on: { workflow_dispatch: {} }
+
+on:
+  workflow_dispatch: {}
 
 jobs:
   collect:
     runs-on: ubuntu-latest
     timeout-minutes: 720
+
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
+        with:
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
@@ -19,57 +23,68 @@ jobs:
           pip install -r requirements.txt || true
           pip install boto3 requests numpy pandas reportlab
 
+      # --- Preflight to R2: compose endpoint from account id ---
       - name: R2 preflight (write a tiny status object)
         env:
-          S3_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}   # https://<acctid>.r2.cloudflarestorage.com
-          S3_BUCKET:       ${{ secrets.R2_BUCKET }}
+          R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}   # e.g. abcdef1234567890abcdef1234567890
+          R2_BUCKET:             ${{ secrets.R2_BUCKET }}
           AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
           python - <<'PY'
           import os, time, boto3
           from botocore.client import Config
-          ep   = os.environ["S3_ENDPOINT_URL"].strip().rstrip("/")
-          buck = os.environ["S3_BUCKET"].strip()
-          key  = f"_status/preflight_{int(time.time())}.txt"
+          acct = os.environ["R2_ACCOUNT_ID"].strip()
+          ep   = f"https://{acct}.r2.cloudflarestorage.com"
+          buck = os.environ["R2_BUCKET"].strip()
           s3 = boto3.client(
               "s3",
-              endpoint_url=ep if ep.startswith("http") else "https://" + ep,
+              endpoint_url=ep,
               aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
               aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
               region_name="auto",
               config=Config(signature_version="s3v4", s3={"addressing_style":"virtual"}),
           )
+          key = f"_status/preflight_{int(time.time())}.txt"
           s3.put_object(Bucket=buck, Key=key, Body=b"ok")
           print("R2 preflight wrote:", f"s3://{buck}/{key}")
           PY
 
+      # --- RUN COLLECTOR (this was missing) ---
       - name: Run collector
         env:
-          S3_ENDPOINT_URL:        ${{ secrets.R2_ENDPOINT_URL }}
-          S3_REGION:              "auto"
-          S3_BUCKET:              ${{ secrets.R2_BUCKET }}
-          S3_PREFIX:              ${{ secrets.R2_PREFIX }}       # optional base path
-          AWS_ACCESS_KEY_ID:      ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY:  ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          # R2 creds for the runner (it will upload too if coded to)
+          R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
+          S3_ENDPOINT_URL:       https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          S3_REGION:             "auto"
+          S3_BUCKET:             ${{ secrets.R2_BUCKET }}
+          S3_PREFIX:             ${{ secrets.R2_PREFIX }}        # optional base path, can be empty
+          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+
+          # Experiment knobs
           QSW_TRIALS: "3000"
           QSW_TRIALS_MODE: "per_condition"
           QSW_PHASE_LEN: "8"
           QSW_MAX_STEPS: "30"
           QSW_CONDITIONS: "quantum,pseudo,deterministic"
-          QSW_QRNG_PROVIDERS: "anu"
-          QSW_PURE: "1"
+
+          # QRNG tuning
+          QSW_QRNG_PROVIDERS: "anu"           # or "anu,json"
+          QSW_PURE: "1"                       # 1=pure, 0=mixed
           QSW_BATCH: "4096"
           QSW_LOW_WATERMARK: "2048"
           QSW_MAX_RETRIES: "12"
           QSW_BACKOFF: "2.0"
           QSW_PURE_MAX_WAIT: "1800"
+
+          # Tag
           QSW_RUN_NAME: "all"
         run: |
           echo "[SANITY] Launching actions_runner.py…"
-          ls -la
           python actions_runner.py
 
+      # --- GitHub Artifact (always) ---
       - name: Upload artifacts to GitHub (always)
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
@@ -82,13 +97,14 @@ jobs:
             QSW_runs/**/manifest.json
             QSW_runs/**/raw/**
 
+      # --- Cloudflare R2 upload (timestamp + run id) ---
       - name: Upload to Cloudflare R2 (timestamp + run id)
         if: ${{ always() }}
         env:
           AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET:             ${{ secrets.R2_BUCKET }}
-          R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}   # just the account id (no https)
+          R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}   # no protocol
           R2_PREFIX:             ${{ secrets.R2_PREFIX }}        # optional
         run: |
           echo "[INFO] Uploading QSW_runs/* to R2…"
