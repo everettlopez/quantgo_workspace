@@ -77,8 +77,8 @@ jobs:
           QSW_TRIALS: 3000
           QSW_PHASE_LEN: 8
           QSW_MAX_STEPS: 30
-          QSW_BATCH: 4096
-          QSW_MAX_RETRIES: 20
+          QSW_BATCH: 256
+          QSW_MAX_RETRIES: 12
           QSW_BACKOFF: 2.0
           QSW_PURE: 1
           QSW_QRNG_PROVIDERS: anu
