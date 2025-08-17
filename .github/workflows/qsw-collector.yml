@@ -1,87 +1,94 @@
 name: QSW Collector
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 jobs:
   collect:
     runs-on: ubuntu-latest
-    steps:
-      - name: Set up job
-        run: echo "Starting QSW Collector..."
+    timeout-minutes: 720
 
+    steps:
       - name: Check out repo
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install boto3
-          pip install reportlab
+          pip install -r requirements.txt || true
+          pip install boto3 requests numpy pandas reportlab
 
-      - name: Validate R2 secrets
+      - name: Show repo tree (debug)
         run: |
-          test -n "${{ secrets.S3_ENDPOINT_URL }}" || (echo "Missing S3_ENDPOINT_URL" && exit 1)
-          test -n "${{ secrets.S3_BUCKET }}" || (echo "Missing S3_BUCKET" && exit 1)
-          test -n "${{ secrets.AWS_ACCESS_KEY_ID }}" || (echo "Missing AWS_ACCESS_KEY_ID" && exit 1)
-          test -n "${{ secrets.AWS_SECRET_ACCESS_KEY }}" || (echo "Missing AWS_SECRET_ACCESS_KEY" && exit 1)
-        shell: bash
+          echo "::group::Repo tree"
+          ls -la
+          find . -maxdepth 3 -type f | sed 's|^\./||'
+          echo "::endgroup::"
 
-      - name: R2 preflight â write test object
+      - name: Verify collector path
         run: |
-          python - <<'PY'
-          import os, time
-          import boto3
-          from botocore.client import Config
+          if [ ! -f "actions_runner.py" ]; then
+            echo "ERROR: actions_runner.py not found at repo root"
+            exit 1
+          fi
 
-          ep   = os.environ["S3_ENDPOINT_URL"].strip().rstrip("/")
-          buck = os.environ["S3_BUCKET"]
-          pfx  = os.environ.get("S3_PREFIX","autocollect").strip().rstrip("/")
-          key  = f"{pfx}/_status/preflight_{int(time.time())}.txt"
-
-          s3 = boto3.client(
-              "s3",
-              endpoint_url=ep if ep.startswith("http") else "https://" + ep,
-              aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
-              aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
-              region_name=os.environ.get("S3_REGION","auto"),
-              config=Config(signature_version="s3v4", s3={"addressing_style":"virtual"}),
-          )
-          body = f"hello from actions at {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n"
-          s3.put_object(Bucket=buck, Key=key, Body=body.encode(), ContentType="text/plain")
-          print("Wrote:", f"s3://{buck}/{key}")
-          PY
+      - name: Run collector
         env:
-          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
-          S3_BUCKET:       ${{ secrets.S3_BUCKET }}
-          S3_PREFIX:       ${{ secrets.S3_PREFIX }} # or hardcode "autocollect"
-          S3_REGION:       "auto"
-          AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          QSW_TRIALS: "3000"
+          QSW_TRIALS_MODE: "per_condition"
+          QSW_PHASE_LEN: "8"
+          QSW_MAX_STEPS: "30"
+          QSW_CONDITIONS: "quantum,pseudo,deterministic"
 
-      - name: Run one collection pass
-        run: python actions_runner.py
+          QSW_QRNG_PROVIDERS: "anu"
+          QSW_PURE: "1"
+          QSW_BATCH: "4096"
+          QSW_LOW_WATERMARK: "2048"
+          QSW_MAX_RETRIES: "12"
+          QSW_BACKOFF: "2.0"
+          QSW_PURE_MAX_WAIT: "1800"
+
+          QSW_RUN_NAME: "all"
+        run: |
+          echo "[SANITY] Launching actions_runner.py…"
+          python actions_runner.py
+
+      - name: Upload artifacts to GitHub (always)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: collector-logs
+          path: |
+            QSW_runs/**/_status/**
+            QSW_runs/**/results_summary.csv
+            QSW_runs/**/metadata.json
+            QSW_runs/**/manifest.json
+            QSW_runs/**/raw/**
+
+      - name: Upload to Cloudflare R2 (timestamp + run id)
+        if: ${{ always() }}
         env:
-          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
-          S3_REGION: "auto"
-          S3_BUCKET: ${{ secrets.S3_BUCKET }}
-          S3_PREFIX: ${{ secrets.S3_PREFIX }}  # must match Streamlit config
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          QSW_TRIALS: 3000
-          QSW_PHASE_LEN: 8
-          QSW_MAX_STEPS: 30
-          QSW_BATCH: 256
-          QSW_MAX_RETRIES: 12
-          QSW_BACKOFF: 2.0
-          QSW_PURE: 1
-          QSW_QRNG_PROVIDERS: anu
-          QSW_CONDITIONS: quantum,pseudo,deterministic
-          QSW_PURE_MAX_WAIT: 1500
-          QSW_RUN_NAME: all
+          AWS_ACCESS_KEY_ID:      ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY:  ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET:              ${{ secrets.R2_BUCKET }}
+          R2_PREFIX:              ${{ secrets.R2_PREFIX }}
+          R2_ENDPOINT_URL:        ${{ secrets.R2_ENDPOINT_URL }}
+        run: |
+          if [ -z "$R2_ENDPOINT_URL" ] || [ -z "$R2_BUCKET" ]; then
+            echo "[WARN] R2 secrets missing; skipping R2 upload."
+            exit 0
+          fi
+          TS=$(date -u +"%Y-%m-%dT%H-%M-%SZ")
+          DEST="${R2_PREFIX:+$R2_PREFIX/}collector-runs/${TS}-run${{ github.run_id }}/"
+          echo "[INFO] Destination: s3://$R2_BUCKET/$DEST"
+          if [ -d "QSW_runs" ]; then
+            aws s3 cp QSW_runs "s3://$R2_BUCKET/$DEST" --recursive \
+              --endpoint-url "$R2_ENDPOINT_URL"
+          else
+            echo "[WARN] QSW_runs directory not found; nothing to upload."
+          fi
