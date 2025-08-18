@@ -23,12 +23,12 @@ from tasks_impasse import ImpasseEscapeTask, shannon_diversity
 
 # ---------- Env / Params ----------
 RUNS_ROOT   = Path(os.getenv("QSW_RUNS_DIR", ROOT / "QSW_runs")); RUNS_ROOT.mkdir(parents=True, exist_ok=True)
-TRIALS      = int(os.getenv("QSW_TRIALS", "3000"))
+TRIALS      = int(os.getenv("QSW_TRIALS", "1200"))
 PHASE_LEN   = int(os.getenv("QSW_PHASE_LEN", "8"))
 MAX_STEPS   = int(os.getenv("QSW_MAX_STEPS", "30"))
-BATCH_RUN   = int(os.getenv("QSW_BATCH", "256"))
-MAX_RETRIES = int(os.getenv("QSW_MAX_RETRIES", "12"))
-BACKOFF     = float(os.getenv("QSW_BACKOFF", "2.0"))
+BATCH_RUN   = int(os.getenv("QSW_BATCH", "1024"))
+MAX_RETRIES = int(os.getenv("QSW_MAX_RETRIES", "20"))
+BACKOFF     = float(os.getenv("QSW_BACKOFF", "3.0"))
 PURE_QRNG   = os.getenv("QSW_PURE", "1") == "1"
 PROVIDERS   = [p.strip() for p in os.getenv("QSW_QRNG_PROVIDERS", "anu").split(",") if p.strip()]
 CONDITIONS  = [c.strip() for c in os.getenv("QSW_CONDITIONS", "quantum").split(",") if c.strip()]
