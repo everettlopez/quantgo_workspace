@@ -21,7 +21,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt || true
-          pip install boto3 requests numpy pandas reportlab
+          pip install boto3 requests numpy pandas reportlab awscli
 
       - name: Show repo tree (debug)
         run: |
@@ -75,9 +75,9 @@ jobs:
         env:
           AWS_ACCESS_KEY_ID:      ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY:  ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET:              ${{ secrets.R2_BUCKET }}
-          R2_PREFIX:              ${{ secrets.R2_PREFIX }}
-          R2_ENDPOINT_URL:        ${{ secrets.R2_ENDPOINT_URL }}
+          R2_BUCKET:              ${{ secrets.R2_BUCKET }}       # e.g., qswruns
+          R2_PREFIX:              ${{ secrets.R2_PREFIX }}       # e.g., gsw/runs
+          R2_ENDPOINT_URL:        ${{ secrets.R2_ENDPOINT_URL }} # https://<ACCOUNT_ID>.r2.cloudflarestorage.com
         run: |
           if [ -z "$R2_ENDPOINT_URL" ] || [ -z "$R2_BUCKET" ]; then
             echo "[WARN] R2 secrets missing; skipping R2 upload."
@@ -87,8 +87,7 @@ jobs:
           DEST="${R2_PREFIX:+$R2_PREFIX/}collector-runs/${TS}-run${{ github.run_id }}/"
           echo "[INFO] Destination: s3://$R2_BUCKET/$DEST"
           if [ -d "QSW_runs" ]; then
-            aws s3 cp QSW_runs "s3://$R2_BUCKET/$DEST" --recursive \
-              --endpoint-url "$R2_ENDPOINT_URL"
+            aws s3 cp QSW_runs "s3://$R2_BUCKET/$DEST" --recursive --endpoint-url "$R2_ENDPOINT_URL"
           else
             echo "[WARN] QSW_runs directory not found; nothing to upload."
           fi
