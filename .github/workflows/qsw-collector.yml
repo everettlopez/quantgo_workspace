@@ -39,7 +39,7 @@ jobs:
 
       - name: Run collector
         env:
-          QSW_TRIALS: "3000"
+          QSW_TRIALS: "1200"
           QSW_TRIALS_MODE: "per_condition"
           QSW_PHASE_LEN: "8"
           QSW_MAX_STEPS: "30"
@@ -47,11 +47,11 @@ jobs:
 
           QSW_QRNG_PROVIDERS: "anu"
           QSW_PURE: "1"
-          QSW_BATCH: "4096"
-          QSW_LOW_WATERMARK: "2048"
-          QSW_MAX_RETRIES: "12"
-          QSW_BACKOFF: "2.0"
-          QSW_PURE_MAX_WAIT: "1800"
+          QSW_BATCH: "1024"
+          QSW_LOW_WATERMARK: "512"
+          QSW_MAX_RETRIES: "20"
+          QSW_BACKOFF: "3.0"
+          QSW_PURE_MAX_WAIT: "2000"
 
           QSW_RUN_NAME: "all"
         run: |
