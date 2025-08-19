@@ -370,7 +370,7 @@ if st.button("Start Run", disabled=start_disabled):
         # -------------------- AUTO-UPLOAD TO CLOUDFLARE R2 --------------------
         try:
             bucket = st.secrets.get("S3_BUCKET")
-            prefix = st.secrets.get("S3_PREFIX", "gsw/runs")
+            prefix = st.secrets.get("S3_PREFIX", "qsw/runs")
             if bucket and st.secrets.get("S3_ENDPOINT_URL"):
                 with st.spinner(f"Uploading {out_dir.name} to R2…"):
                     uploaded, skipped = r2_upload_dir(out_dir, bucket, prefix)
