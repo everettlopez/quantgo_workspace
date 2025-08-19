@@ -65,7 +65,7 @@ def render_heartbeat(title="Collector status (R2 heartbeat)"):
 
     # Config
     bucket = st.secrets.get("S3_BUCKET","").strip()
-    prefix = st.secrets.get("S3_PREFIX","autocollect").strip().rstrip("/")
+    prefix = st.secrets.get("S3_PREFIX", "qsw/runs/_status").strip().rstrip("/")
     endpoint = _norm_endpoint(st.secrets.get("S3_ENDPOINT_URL",""))
 
     with st.expander("Connection & path (diagnostics)", expanded=False):
