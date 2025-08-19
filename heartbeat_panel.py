@@ -43,7 +43,7 @@ def _list_status_keys(bucket: str, prefix: str):
     s3 = _r2_client()
     if not s3: return None, "no_client"
     try:
-        pfx = prefix.rstrip("/") + "/_status/"
+        pfx = prefix.rstrip("/") + "qsw/runs/_status/"
         resp = s3.list_objects_v2(Bucket=bucket, Prefix=pfx, MaxKeys=25)
         return [c["Key"] for c in resp.get("Contents", [])], None
     except Exception as e:
