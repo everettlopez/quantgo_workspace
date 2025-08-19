@@ -78,7 +78,7 @@ def render_heartbeat(title="Collector status (R2 heartbeat)"):
         # No deprecation warnings
         st.query_params.update({"_hb": str(int(time.time() // 10))})
 
-    inprog_key = f"{prefix}/_status/in_progress.json" if prefix else "_status/in_progress.json"
+    inprog_key = f"qsw/runs/_status/in_progress.json" if prefix else "qsw/runs/_status/in_progress.json"
     latest_key = f"{prefix}/_status/latest.json"      if prefix else "_status/latest.json"
 
     c1, c2 = st.columns(2)
