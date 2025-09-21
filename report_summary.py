@@ -13,6 +13,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
 from reportlab.lib import colors
 
+
 COND_ORDER = ["quantum", "pseudo", "deterministic"]
 
 def _safe_get(d, k, default=None):

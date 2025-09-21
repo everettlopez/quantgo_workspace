@@ -5,6 +5,19 @@ This experiment uses the ANU Quantum Random Number Generator (QRNG) API alongsid
 
 ---
 
+## Table of Contents
+- [Overview](#overview)
+- [Features](#features)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Examples](#examples)
+- [Contributing](#contributing)
+- [Roadmap](#roadmap)
+- [License](#license)
+- [Acknowledgments](#acknowledgments)
+
+---
+
 ## Overview
 
 This project implements a **go/no-go experimental paradigm** where an agent attempts to escape decision impasses under three distinct conditions:
@@ -14,6 +27,10 @@ This project implements a **go/no-go experimental paradigm** where an agent atte
 - **Deterministic:** Fixed, non-random sequence for gating.
 
 The agent's ability to escape impasses is measured across hundreds of trials per condition, producing performance, diversity, and correlation metrics.
+
+---
+
+## Features
 
 ---
 
@@ -43,7 +60,7 @@ For each run, the app saves:
 
 ---
 
-## Running the Experiment
+## Installation
 
 1. **Launch the Streamlit App**: [Live Demo Here](https://gswv25-3annkcrumedcogwfu6xyk3.streamlit.app/)  
 2. Select trial count, phase length, and conditions.  
@@ -68,3 +85,5 @@ By comparing against pseudo and deterministic baselines, collaborators can explo
 MIT License — feel free to fork, adapt, and extend for your own research.
 
 ---
+
+## Acknowledgments 
